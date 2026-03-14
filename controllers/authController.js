@@ -9,7 +9,6 @@ exports.login = (req, res) => {
 
     const { username, password } = req.body;
 
-    console.log("🔐 Login attempt:", username);
 
     if (!username || !password) {
         return res.status(400).json({
@@ -21,7 +20,6 @@ exports.login = (req, res) => {
     // Default admin login
     if (username === DEFAULT_USERNAME && password === DEFAULT_PASSWORD) {
 
-        console.log("✅ Default admin login");
 
         return res.json({
             success: true,
@@ -50,13 +48,11 @@ exports.login = (req, res) => {
         WHERE faculty_id = ?
     `;
 
-    console.log("📡 Running DB query for faculty_id:", username);
 
     const startTime = Date.now();
 
     db.query(usersQuery, [username], (err, results) => {
 
-        console.log("📡 DB query finished in", Date.now() - startTime, "ms");
 
         if (err) {
             console.error("❌ Database error:", err);
@@ -66,7 +62,6 @@ exports.login = (req, res) => {
             });
         }
 
-        console.log("📦 DB results:", results);
 
         if (!results || results.length === 0) {
             console.log("❌ No user found");
@@ -78,15 +73,11 @@ exports.login = (req, res) => {
 
         const user = results[0];
 
-        console.log("🔑 Comparing password...");
-        console.log("Input password:", password);
-        console.log("Stored hash:", user.password);
-
+        
         const bcryptStart = Date.now();
 
         bcrypt.compare(password, user.password, (err, isMatch) => {
 
-            console.log("🔑 bcrypt finished in", Date.now() - bcryptStart, "ms");
 
             if (err) {
                 console.error("❌ Bcrypt error:", err);
@@ -96,7 +87,6 @@ exports.login = (req, res) => {
                 });
             }
 
-            console.log("🔑 bcrypt result:", isMatch);
 
             if (!isMatch) {
                 return res.json({
@@ -105,7 +95,6 @@ exports.login = (req, res) => {
                 });
             }
 
-            console.log("✅ Login successful for:", user.faculty_id);
 
             res.json({
                 success: true,
