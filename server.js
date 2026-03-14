@@ -16,7 +16,7 @@ app.use(helmet());
 
 // CORS configuration
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000', 'https://srm-sp-production.up.railway.app', 'https://frontend-lilac-alpha-75.vercel.app/','https://frontend-oho74vv4z-deepikarani096-devs-projects.vercel.app'],
+  origin: ['http://localhost:5173', 'http://localhost:3000', 'https://srm-sp-production.up.railway.app', 'https://frontend-lilac-alpha-75.vercel.app','https://frontend-oho74vv4z-deepikarani096-devs-projects.vercel.app'],
   credentials: true
 }));
 
