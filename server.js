@@ -7,7 +7,7 @@ const validation = require('./middleware/validationMiddleware');
 const logging = require('./middleware/loggingMiddleware');
 
 const app = express();
-
+app.set('trust proxy', 1);
 // Railway requires using its provided port
 const PORT = process.env.PORT || 5001;
 
