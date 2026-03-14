@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log
+yarn.lock
+.pnpm-store
+dist
+build
+.env
+.DS_Store
+.git
+__pycache__/
+python_files/.venv
+python_files/*.pyc

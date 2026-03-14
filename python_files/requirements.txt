@@ -1,0 +1,7 @@
+pandas
+mysql.connector
+matplotlib
+selenium
+requests
+webdriver-manager
+elsapy
