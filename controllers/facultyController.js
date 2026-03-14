@@ -6,11 +6,16 @@ exports.getAllFaculty = (req, res) => {
 
     let deptConditions = [];
     let deptParams = [];
+    let userDepartment = null;
     try {
         if (req.user && req.user.access_level) {
             const filter = getDepartmentFilterForRequest(req, 'u');
             deptConditions = filter.conditions;
             deptParams = filter.params;
+            // For HOD users, capture their department
+            if (req.user.access_level === 2 && req.user.department) {
+                userDepartment = req.user.department;
+            }
         }
     } catch (err) {
         console.error('Department filter error:', err);
@@ -32,7 +37,9 @@ exports.getAllFaculty = (req, res) => {
     }
     if (domain) {
         // For C.Tech: use paper_domain table; For others: use paper_insights.asjc_field_name
-        const isCTech = department === 'C.Tech';
+        // Check passed department parameter first, then fall back to user's department for HOD
+        const targetDept = department || userDepartment;
+        const isCTech = targetDept === 'C.Tech';
         if (isCTech) {
             filters.push(`REPLACE(LOWER(pd.domain), ' ', '') LIKE ?`);
         } else {
@@ -52,8 +59,9 @@ exports.getAllFaculty = (req, res) => {
     const whereClause = filters.length ? `AND ${filters.join(" AND ")}` : "";
     const deptWhereClause = deptConditions.length ? `AND ${deptConditions.join(" AND ")}` : "";
 
-    // Determine which domain column to use
-    const isCTech = department === 'C.Tech';
+    // Determine which domain column to use based on passed department or user's department
+    const targetDept = department || userDepartment;
+    const isCTech = targetDept === 'C.Tech';
     const domainColumn = isCTech ? 'COALESCE(pd.domain, pi.asjc_field_name)' : 'COALESCE(pi.asjc_field_name, pd.domain)';
 
     const query = `
@@ -1205,6 +1213,13 @@ exports.getQuartileSummaryStats = (req, res) => {
 // ── Get Available Domains by Department ─────────────────────────────────────
 exports.getAvailableDomains = (req, res) => {
     const { department } = req.query;
+
+    // Security: HOD (access_level 2) users can only fetch domains for their own department
+    if (req.user && req.user.access_level === 2 && req.user.department) {
+        if (department !== req.user.department) {
+            return res.status(403).json({ error: 'You can only access domains for your own department' });
+        }
+    }
 
     // Static domain list for C.Tech department
     const cTechDomains = [
