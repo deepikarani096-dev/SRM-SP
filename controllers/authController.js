@@ -58,6 +58,8 @@ exports.login = (req, res) => {
         const user = results[0];
 
         // Compare bcrypt hashed password
+        console.log("Input password:", password);
+        console.log("Stored hash:", user.password);
         bcrypt.compare(password, user.password, (err, isMatch) => {
 
             if (err) {
