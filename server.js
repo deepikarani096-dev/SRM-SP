@@ -28,6 +28,9 @@ app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 app.use(logging.requestLogger);
 
 // Routes
+app.get('/', (req, res) => {
+ res.json({ message: 'Backend is running' });
+});
 app.use('/api', require('./routes/auth'));
 app.use('/api', require('./routes/publications'));
 app.use('/api/faculty', require('./routes/faculty'));
