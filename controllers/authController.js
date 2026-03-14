@@ -6,10 +6,23 @@ const DEFAULT_PASSWORD = 'Admin';
 const ADMIN_ACCESS_LEVEL = 1;
 
 exports.login = (req, res) => {
+
     const { username, password } = req.body;
+
+    console.log("🔐 Login attempt:", username);
+
+    if (!username || !password) {
+        return res.status(400).json({
+            success: false,
+            message: "Username and password are required"
+        });
+    }
 
     // Default admin login
     if (username === DEFAULT_USERNAME && password === DEFAULT_PASSWORD) {
+
+        console.log("✅ Default admin login");
+
         return res.json({
             success: true,
             message: 'Login successful (Default Admin)',
@@ -23,7 +36,6 @@ exports.login = (req, res) => {
         });
     }
 
-    // Login using users table
     const usersQuery = `
         SELECT 
             id,
@@ -38,49 +50,66 @@ exports.login = (req, res) => {
         WHERE faculty_id = ?
     `;
 
+    console.log("📡 Running DB query for faculty_id:", username);
+
+    const startTime = Date.now();
+
     db.query(usersQuery, [username], (err, results) => {
 
+        console.log("📡 DB query finished in", Date.now() - startTime, "ms");
+
         if (err) {
-            console.error('Database error:', err);
+            console.error("❌ Database error:", err);
             return res.status(500).json({
                 success: false,
-                message: 'Server error'
+                message: "Database error"
             });
         }
 
-        if (results.length === 0) {
+        console.log("📦 DB results:", results);
+
+        if (!results || results.length === 0) {
+            console.log("❌ No user found");
             return res.json({
                 success: false,
-                message: 'Invalid credentials'
+                message: "Invalid credentials"
             });
         }
 
         const user = results[0];
 
-        // Compare bcrypt hashed password
+        console.log("🔑 Comparing password...");
         console.log("Input password:", password);
         console.log("Stored hash:", user.password);
+
+        const bcryptStart = Date.now();
+
         bcrypt.compare(password, user.password, (err, isMatch) => {
 
+            console.log("🔑 bcrypt finished in", Date.now() - bcryptStart, "ms");
+
             if (err) {
-                console.error('Bcrypt error:', err);
+                console.error("❌ Bcrypt error:", err);
                 return res.status(500).json({
                     success: false,
-                    message: 'Server error'
+                    message: "Server error"
                 });
             }
+
+            console.log("🔑 bcrypt result:", isMatch);
 
             if (!isMatch) {
                 return res.json({
                     success: false,
-                    message: 'Invalid credentials'
+                    message: "Invalid credentials"
                 });
             }
 
-            // Successful login
+            console.log("✅ Login successful for:", user.faculty_id);
+
             res.json({
                 success: true,
-                message: 'Login successful',
+                message: "Login successful",
                 user: {
                     id: user.id,
                     username: user.faculty_id,
@@ -97,4 +126,5 @@ exports.login = (req, res) => {
         });
 
     });
+
 };
