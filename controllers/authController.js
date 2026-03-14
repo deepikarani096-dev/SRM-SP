@@ -23,22 +23,6 @@ exports.login = (req, res) => {
         });
     }
 
-    // Try login from agents table (if exists)
-    const agentsQuery = 'SELECT * FROM agents WHERE username = ? AND password = ?';
-    db.query(agentsQuery, [username, password], (err, agentResults) => {
-        if (!err && agentResults.length > 0) {
-            return res.json({ 
-                success: true, 
-                message: 'Login successful',
-                user: {
-                    username: agentResults[0].username,
-                    accessLevel: agentResults[0].access_level || 2,
-                    facultyId: null,
-                    scopusId: null
-                }
-            });
-        }
-
         // Try login from users table with actual password field
         const usersQuery = 'SELECT id, faculty_id, faculty_name, scopus_id, access_level, email, department, password FROM users WHERE faculty_id = ?';
         
