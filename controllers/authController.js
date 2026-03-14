@@ -95,34 +95,4 @@ exports.login = (req, res) => {
         });
 
     });
-};                    if (err) {
-                        console.error('Bcrypt error:', err);
-                        return res.status(500).json({ success: false, message: 'Server error' });
-                    }
-
-                    if (isMatch) {
-                        res.json({ 
-                            success: true, 
-                            message: 'Login successful',
-                            user: {
-                                id: user.id,
-                                username: user.faculty_id,
-                                facultyId: user.faculty_id,
-                                facultyName: user.faculty_name,
-                                scopusId: user.scopus_id,
-                                accessLevel: user.access_level,
-                                email: user.email,
-                                department: user.department,
-                                isAdmin: false
-                            }
-                        });
-                    } else {
-                        res.json({ success: false, message: 'Invalid credentials' });
-                    }
-                });
-            } else {
-                res.json({ success: false, message: 'Invalid credentials' });
-            }
-        });
-    });
 };
