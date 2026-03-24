@@ -47,39 +47,86 @@ exports.getTopAuthor = (req, res) => {
   const { conditions, params: filterParams } = getDepartmentFilterForRequest(req, 'u');
   const departmentWhere = conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
 
-  const baseAggregation = `
-    SELECT
-      u.faculty_id,
-      u.faculty_name,
-      COUNT(DISTINCT p.doi) AS timeframe_docs
-    FROM users u
-    JOIN papers p ON u.scopus_id = p.scopus_id
-    WHERE p.date >= DATE_SUB(CURDATE(), INTERVAL ${interval})
-      AND p.date <= CURDATE()
-      AND u.faculty_id IS NOT NULL
-      ${departmentWhere}
-    GROUP BY u.faculty_id, u.faculty_name
+  const weightedSubquery = `
+SELECT 
+  u.faculty_id,
+  u.faculty_name,
+
+  COUNT(p.id) AS total_papers,
+
+  -- TYPE BREAKDOWN
+  SUM(CASE WHEN p.type = 'Journal' THEN 1 ELSE 0 END) AS journal_count,
+  SUM(CASE WHEN p.type = 'Conference Proceeding' THEN 1 ELSE 0 END) AS conference_count,
+  SUM(CASE WHEN p.type = 'Book' THEN 1 ELSE 0 END) AS book_count,
+
+  -- QUARTILE BREAKDOWN
+  SUM(CASE WHEN COALESCE(fqs.quartile_2024, fqs.quartile_2023, fqs.quartile_2022, p.quartile) = 'Q1' THEN 1 ELSE 0 END) AS q1_count,
+  SUM(CASE WHEN COALESCE(fqs.quartile_2024, fqs.quartile_2023, fqs.quartile_2022, p.quartile) = 'Q2' THEN 1 ELSE 0 END) AS q2_count,
+  SUM(CASE WHEN COALESCE(fqs.quartile_2024, fqs.quartile_2023, fqs.quartile_2022, p.quartile) = 'Q3' THEN 1 ELSE 0 END) AS q3_count,
+  SUM(CASE WHEN COALESCE(fqs.quartile_2024, fqs.quartile_2023, fqs.quartile_2022, p.quartile) = 'Q4' THEN 1 ELSE 0 END) AS q4_count,
+
+  -- IMPACT BREAKDOWN
+  SUM(CASE WHEN pm.impact_factor_2025 > 7 THEN 1 ELSE 0 END) AS high_if_count,
+  SUM(CASE WHEN pm.impact_factor_2025 BETWEEN 3 AND 7 THEN 1 ELSE 0 END) AS mid_if_count,
+
+  -- FINAL SCORE
+  SUM(
+    CASE 
+      WHEN p.type = 'Journal' THEN 3
+      WHEN p.type = 'Book' THEN 2
+      WHEN p.type = 'Conference Proceeding' THEN 1
+      ELSE 1
+    END
+    +
+    CASE 
+      WHEN COALESCE(fqs.quartile_2024, fqs.quartile_2023, fqs.quartile_2022, p.quartile) = 'Q1' THEN 4
+      WHEN COALESCE(fqs.quartile_2024, fqs.quartile_2023, fqs.quartile_2022, p.quartile) = 'Q2' THEN 3
+      WHEN COALESCE(fqs.quartile_2024, fqs.quartile_2023, fqs.quartile_2022, p.quartile) = 'Q3' THEN 2
+      WHEN COALESCE(fqs.quartile_2024, fqs.quartile_2023, fqs.quartile_2022, p.quartile) = 'Q4' THEN 1
+      ELSE 0
+    END
+    +
+    CASE 
+      WHEN pm.impact_factor_2025 > 7 THEN 5
+      WHEN pm.impact_factor_2025 BETWEEN 3 AND 7 THEN 3
+      WHEN pm.impact_factor_2025 IS NOT NULL THEN 1
+      ELSE 0
+    END
+  ) AS total_score
+
+FROM users u
+JOIN papers p ON u.scopus_id = p.scopus_id
+LEFT JOIN faculty_quartile_summary fqs ON p.doi = fqs.doi
+LEFT JOIN publication_metrics pm 
+  ON p.publication_name COLLATE utf8mb4_general_ci 
+   = pm.publication_name COLLATE utf8mb4_general_ci
+
+WHERE p.date >= DATE_SUB(CURDATE(), INTERVAL ${interval})
+  AND p.date <= CURDATE()
+  ${departmentWhere}
+
+GROUP BY u.faculty_id, u.faculty_name
   `;
 
-  const query = `
-    SELECT t.faculty_id, t.faculty_name, t.timeframe_docs
-    FROM (
-      ${baseAggregation}
+  const finalQuery = `
+    SELECT * FROM (
+      ${weightedSubquery}
     ) t
-    WHERE t.timeframe_docs = (
-      SELECT MAX(t2.timeframe_docs) FROM (
-        ${baseAggregation}
+    WHERE t.total_score = (
+      SELECT MAX(t2.total_score) FROM (
+        ${weightedSubquery}
       ) t2
-    );
+    )
   `;
 
-  const paramsForTopAuthor = [...filterParams, ...filterParams];
+  const params = [...filterParams, ...filterParams];
 
-  db.query(query, paramsForTopAuthor, (err, results) => {
+  db.query(finalQuery, params, (err, results) => {
     if (err) {
-      console.error(err);
-      return res.status(500).json({ error: 'Failed to fetch top faculty' });
+      console.error("Top Author Error:", err);
+      return res.status(500).json({ error: 'Failed to fetch top author' });
     }
+
     res.json(results);
   });
 };
@@ -204,7 +251,7 @@ exports.getPublicationTypeStats = (req, res) => {
     SELECT 
       p.publication_name,
       p.type,
-      COUNT(*) as count,
+      COUNT(DISTINCT p.doi) as count,
       pm.impact_factor_2025,
       pm.impact_factor_5year
     FROM papers p
@@ -375,25 +422,25 @@ exports.getPublicationPapers = (req, res) => {
 exports.getPublicationMetrics = (req, res) => {
   const { start_date, end_date } = req.query;
 
-  const now         = new Date();
+  const now = new Date();
   const currentYear = now.getFullYear();
-  const reportYear  = currentYear;
+  const reportYear = currentYear;
 
   const defaultStart = `${reportYear}-01-01`;
-  const defaultEnd   = now.toISOString().slice(0, 10);
+  const defaultEnd = now.toISOString().slice(0, 10);
   const start = start_date || defaultStart;
-  const end   = end_date   || defaultEnd;
+  const end = end_date || defaultEnd;
 
   // Previous month range (for metric 4)
   const firstOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const lastOfPrevMonth  = new Date(firstOfThisMonth - 1);
+  const lastOfPrevMonth = new Date(firstOfThisMonth - 1);
   const firstOfPrevMonth = new Date(lastOfPrevMonth.getFullYear(), lastOfPrevMonth.getMonth(), 1);
-  const prevMonthStart   = firstOfPrevMonth.toISOString().slice(0, 10);
-  const prevMonthEnd     = lastOfPrevMonth.toISOString().slice(0, 10);
-  const prevMonthLabel   = firstOfPrevMonth.toLocaleString('default', { month: 'long', year: 'numeric' });
+  const prevMonthStart = firstOfPrevMonth.toISOString().slice(0, 10);
+  const prevMonthEnd = lastOfPrevMonth.toISOString().slice(0, 10);
+  const prevMonthLabel = firstOfPrevMonth.toLocaleString('default', { month: 'long', year: 'numeric' });
 
   const accessLevel = req.user && req.user.access_level ? Number(req.user.access_level) : 1;
-  const userDept    = req.user && req.user.department   ? req.user.department            : null;
+  const userDept = req.user && req.user.department ? req.user.department : null;
 
   const runQuery = (sql, params) => new Promise((resolve, reject) => {
     db.query(sql, params || [], (err, rows) => {
@@ -430,7 +477,7 @@ exports.getPublicationMetrics = (req, res) => {
       `;
 
       const overallRows = await runQuery(overallQuery, [prevMonthStart, prevMonthEnd]);
-      const overallRow  = overallRows && overallRows[0] ? overallRows[0] : {};
+      const overallRow = overallRows && overallRows[0] ? overallRows[0] : {};
 
       // ── Per-department metrics ─────────────────────────────────────────────
       const deptQuery = `
@@ -454,42 +501,42 @@ exports.getPublicationMetrics = (req, res) => {
       const deptRows = await runQuery(deptQuery, [prevMonthStart, prevMonthEnd]);
 
       // ── Shape response ─────────────────────────────────────────────────────
-      const overallTotalPubs    = Number(overallRow.total_publications_all_databases    || 0);
-      const overallTotalCites   = Number(overallRow.total_citations_scopus_consolidated || 0);
+      const overallTotalPubs = Number(overallRow.total_publications_all_databases || 0);
+      const overallTotalCites = Number(overallRow.total_citations_scopus_consolidated || 0);
 
       let response = {
         reporting_period_start: start,
-        reporting_period_end:   end,
-        report_year:            reportYear,
-        prev_month_label:       prevMonthLabel,
+        reporting_period_end: end,
+        report_year: reportYear,
+        prev_month_label: prevMonthLabel,
         overall: {
-          total_publications_all_databases:    overallTotalPubs,
-          total_journal_papers_in_scopus:      Number(overallRow.total_journal_papers_in_scopus      || 0),
-          total_publications_in_year:          Number(overallRow.total_publications_in_year          || 0),
-          total_publications_prev_month:       Number(overallRow.total_publications_prev_month       || 0),
+          total_publications_all_databases: overallTotalPubs,
+          total_journal_papers_in_scopus: Number(overallRow.total_journal_papers_in_scopus || 0),
+          total_publications_in_year: Number(overallRow.total_publications_in_year || 0),
+          total_publications_prev_month: Number(overallRow.total_publications_prev_month || 0),
           total_citations_scopus_consolidated: overallTotalCites,
           // Citation index computed for overall
-          citation_index_consolidated:         calcCitationIndex(overallTotalCites, overallTotalPubs),
-          cumulative_impact_factor:            Number(overallRow.cumulative_impact_factor            || 0),
-          cumulative_snip:                     overallRow.cumulative_snip              ?? null,
-          i10_index_scopus_consolidated:       overallRow.i10_index_scopus_consolidated ?? null,
-          h_index_scopus_consolidated:         Number(overallRow.h_index_scopus_consolidated         || 0),
-          h_index_wos_consolidated:            overallRow.h_index_wos_consolidated     ?? null,
+          citation_index_consolidated: calcCitationIndex(overallTotalCites, overallTotalPubs),
+          cumulative_impact_factor: Number(overallRow.cumulative_impact_factor || 0),
+          cumulative_snip: overallRow.cumulative_snip ?? null,
+          i10_index_scopus_consolidated: overallRow.i10_index_scopus_consolidated ?? null,
+          h_index_scopus_consolidated: Number(overallRow.h_index_scopus_consolidated || 0),
+          h_index_wos_consolidated: overallRow.h_index_wos_consolidated ?? null,
         },
         departments: deptRows.map(r => {
-          const deptTotalPubs  = Number(r.total_publications_all_databases    || 0);
+          const deptTotalPubs = Number(r.total_publications_all_databases || 0);
           const deptTotalCites = Number(r.total_citations_scopus_consolidated || 0);
           return {
-            department:                          r.department,
-            total_publications_all_databases:    deptTotalPubs,
-            total_journal_papers_in_scopus:      Number(r.total_journal_papers_in_scopus || 0),
-            total_publications_in_year:          Number(r.total_publications_in_year     || 0),
-            total_publications_prev_month:       Number(r.total_publications_prev_month  || 0),
+            department: r.department,
+            total_publications_all_databases: deptTotalPubs,
+            total_journal_papers_in_scopus: Number(r.total_journal_papers_in_scopus || 0),
+            total_publications_in_year: Number(r.total_publications_in_year || 0),
+            total_publications_prev_month: Number(r.total_publications_prev_month || 0),
             total_citations_scopus_consolidated: deptTotalCites,
             // Citation index computed per department
-            citation_index_consolidated:         calcCitationIndex(deptTotalCites, deptTotalPubs),
-            cumulative_impact_factor:            Number(r.cumulative_impact_factor       || 0),
-            h_index_scopus_consolidated:         Number(r.h_index_scopus_consolidated    || 0),
+            citation_index_consolidated: calcCitationIndex(deptTotalCites, deptTotalPubs),
+            cumulative_impact_factor: Number(r.cumulative_impact_factor || 0),
+            h_index_scopus_consolidated: Number(r.h_index_scopus_consolidated || 0),
           };
         }),
       };
@@ -499,11 +546,11 @@ exports.getPublicationMetrics = (req, res) => {
         const deptOnly = response.departments.find(d => d.department === userDept) || null;
         response = {
           reporting_period_start: start,
-          reporting_period_end:   end,
-          report_year:            reportYear,
-          prev_month_label:       prevMonthLabel,
-          overall:                null,
-          departments:            deptOnly ? [deptOnly] : [],
+          reporting_period_end: end,
+          report_year: reportYear,
+          prev_month_label: prevMonthLabel,
+          overall: null,
+          departments: deptOnly ? [deptOnly] : [],
         };
       }
 
