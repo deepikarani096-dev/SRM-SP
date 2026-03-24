@@ -37,6 +37,7 @@ exports.getHomepageStats = async (req, res) => {
         deptOnlyCondition = ` AND u.department = ?`;
         deptOnlyParams = [req.user.department];
       }
+      // access_level === 1 (admin): no dept filter → all departments considered
     }
 
     /* -------- DISCOVER ACTUAL NAME COLUMN IN users TABLE -------- */
@@ -164,23 +165,126 @@ exports.getHomepageStats = async (req, res) => {
 
     const topRecentFaculty = topRecentFacultyRows[0] || null;
 
-    /* -------- TOP JOURNAL -------- */
+    /* -------- TOP JOURNAL (by publication count) -------- */
     const [topJournalRow] = await con.query(`
-      SELECT p.publication_name, COUNT(*) AS count
-      FROM papers p
-      JOIN users u ON p.scopus_id = u.scopus_id
-      WHERE 1=1
-      ${deptCondition}
-      GROUP BY p.publication_name
-      ORDER BY count DESC
-      LIMIT 1
-    `, deptParams);
+  SELECT 
+    pm.publication_name,
+    pm.impact_factor_2025 AS impact_factor,
+    COUNT(DISTINCT p.doi) AS paper_count
 
-    const topJournal = topJournalRow[0] || { publication_name: 'N/A', count: 0 };
+  FROM publication_metrics pm
+
+  JOIN papers p 
+    ON TRIM(LOWER(p.publication_name)) COLLATE utf8mb4_unicode_ci 
+       = TRIM(LOWER(pm.publication_name))
+
+  JOIN users u 
+    ON p.scopus_id = u.scopus_id
+
+  WHERE pm.impact_factor_2025 IS NOT NULL
+    AND pm.scrape_status = 'success'
+
+    -- ✅ ensure it's a real journal (not conference)
+    AND LOWER(pm.publication_name) NOT LIKE '%conference%'
+    AND LOWER(pm.publication_name) NOT LIKE '%proceeding%'
+    AND LOWER(pm.publication_name) NOT LIKE '%symposium%'
+    AND LOWER(pm.publication_name) NOT LIKE '%workshop%'
+
+    ${deptCondition}
+
+  GROUP BY pm.publication_name, pm.impact_factor_2025
+
+  ORDER BY pm.impact_factor_2025 DESC
+
+  LIMIT 1
+`, deptParams);
+
+    const topJournal = topJournalRow[0]
+      ? {
+        publication_name: topJournalRow[0].publication_name,
+        impact_factor: parseFloat(topJournalRow[0].impact_factor),
+        count: topJournalRow[0].paper_count
+      }
+      : { publication_name: 'N/A', impact_factor: 0, count: 0 };
+
+    /* -------- TOP IMPACT FACTOR JOURNAL WITH FACULTY NAMES --------
+       Logic:
+       - Join papers → publication_metrics on publication_name to find journals
+         that actually have papers authored by faculty in scope.
+       - Filter: impact_factor_2025 must be non-null and scrape_status = 'success'
+         so we only show journals with verified IF data.
+       - access_level 1 (admin) → no department filter → all departments.
+       - access_level 2/3 → deptCondition restricts to their department.
+       - Order by impact_factor_2025 DESC, take the top 1 journal.
+       - Collect all distinct faculty names who published in that journal
+         using GROUP_CONCAT, then split on '|' in the response.
+    ------------------------------------------------------------ */
+    const [topIFJournalRows] = await con.query(`
+  SELECT 
+    u.scopus_id,
+    u.${nameCol} AS faculty_name,
+
+    COUNT(DISTINCT pm.publication_name) AS matched_journals,
+
+    GROUP_CONCAT(
+      DISTINCT CONCAT(
+        pm.publication_name, 
+        ' (IF: ', pm.impact_factor_2025, ')'
+      )
+      ORDER BY pm.impact_factor_2025 DESC
+      SEPARATOR '|'
+    ) AS journals_with_if
+
+  FROM users u
+
+  JOIN papers p 
+    ON u.scopus_id = p.scopus_id
+
+  JOIN publication_metrics pm 
+    ON TRIM(LOWER(p.publication_name)) COLLATE utf8mb4_unicode_ci 
+       = TRIM(LOWER(pm.publication_name))
+
+  -- 🔥 Top 7 journals WITH papers
+  JOIN (
+      SELECT pm2.publication_name
+      FROM publication_metrics pm2
+      JOIN papers p2 
+        ON TRIM(LOWER(p2.publication_name)) COLLATE utf8mb4_unicode_ci 
+           = TRIM(LOWER(pm2.publication_name))
+      WHERE pm2.impact_factor_2025 IS NOT NULL
+        AND pm2.scrape_status = 'success'
+      GROUP BY pm2.publication_name, pm2.impact_factor_2025
+      ORDER BY pm2.impact_factor_2025 DESC
+      LIMIT 7
+  ) top_journals
+    ON pm.publication_name = top_journals.publication_name
+
+  WHERE 1=1
+  ${deptCondition}
+
+  GROUP BY u.scopus_id, u.${nameCol}
+
+  HAVING COUNT(DISTINCT pm.publication_name) >= 2
+
+  ORDER BY matched_journals DESC
+
+  LIMIT 10
+`, deptParams);
+
+    let topIFJournal = [];
+
+    if (topIFJournalRows.length > 0) {
+      topIFJournal = topIFJournalRows.map(row => ({
+        scopus_id: row.scopus_id,
+        faculty_name: row.faculty_name,
+        matched_journals: row.matched_journals,
+        journals: row.journals_with_if
+          ? row.journals_with_if.split('|').map(j => j.trim()).filter(Boolean)
+          : []
+      }));
+    }
 
     /* -------- DEPARTMENT-WISE STATS -------- */
-    // avg_h_index is intentionally removed — H-Index values are hardcoded
-    // in the frontend (DEPT_H_INDEX map) per department.
     let deptStatQuery = `
       SELECT 
         department,
@@ -200,6 +304,7 @@ exports.getHomepageStats = async (req, res) => {
       deptStatQuery += ` AND faculty_id = ?`;
       deptStatParams = [req.user.facultyId];
     }
+    // access_level === 1: no extra filter
 
     deptStatQuery += ` GROUP BY department ORDER BY department`;
 
@@ -246,16 +351,17 @@ exports.getHomepageStats = async (req, res) => {
 
     /* -------- RESPONSE -------- */
     res.json({
-      totalCitations:     citations[0].total || 0,
-      topCitedFaculty:    topCitedFaculty,
-      totalPapers:        actualPapers[0].total || 0,
-      topRecentFaculty:   topRecentFaculty,
+      totalCitations: citations[0].total || 0,
+      topCitedFaculty: topCitedFaculty,
+      totalPapers: actualPapers[0].total || 0,
+      topRecentFaculty: topRecentFaculty,
       topSDGs,
       topCountries,
-      recentQ1Papers:     q1Data[0].total || 0,
+      recentQ1Papers: q1Data[0].total || 0,
       recentPublications: recentPapers[0].total || 0,
       topJournal,
-      departmentStats:    enrichedDeptStats,
+      topIFJournal,          // ← NEW: highest impact factor journal + faculty names
+      departmentStats: enrichedDeptStats,
     });
 
   } catch (err) {
