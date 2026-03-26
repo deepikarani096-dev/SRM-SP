@@ -6,16 +6,11 @@ exports.getAllFaculty = (req, res) => {
 
     let deptConditions = [];
     let deptParams = [];
-    let userDepartment = null;
     try {
         if (req.user && req.user.access_level) {
             const filter = getDepartmentFilterForRequest(req, 'u');
             deptConditions = filter.conditions;
             deptParams = filter.params;
-            // For HOD users, capture their department
-            if (req.user.access_level === 2 && req.user.department) {
-                userDepartment = req.user.department;
-            }
         }
     } catch (err) {
         console.error('Department filter error:', err);
@@ -37,9 +32,7 @@ exports.getAllFaculty = (req, res) => {
     }
     if (domain) {
         // For C.Tech: use paper_domain table; For others: use paper_insights.asjc_field_name
-        // Check passed department parameter first, then fall back to user's department for HOD
-        const targetDept = department || userDepartment;
-        const isCTech = targetDept === 'C.Tech';
+        const isCTech = department === 'C.Tech';
         if (isCTech) {
             filters.push(`REPLACE(LOWER(pd.domain), ' ', '') LIKE ?`);
         } else {
@@ -59,9 +52,8 @@ exports.getAllFaculty = (req, res) => {
     const whereClause = filters.length ? `AND ${filters.join(" AND ")}` : "";
     const deptWhereClause = deptConditions.length ? `AND ${deptConditions.join(" AND ")}` : "";
 
-    // Determine which domain column to use based on passed department or user's department
-    const targetDept = department || userDepartment;
-    const isCTech = targetDept === 'C.Tech';
+    // Determine which domain column to use
+    const isCTech = department === 'C.Tech';
     const domainColumn = isCTech ? 'COALESCE(pd.domain, pi.asjc_field_name)' : 'COALESCE(pi.asjc_field_name, pd.domain)';
 
     const query = `
@@ -1214,13 +1206,6 @@ exports.getQuartileSummaryStats = (req, res) => {
 exports.getAvailableDomains = (req, res) => {
     const { department } = req.query;
 
-    // Security: HOD (access_level 2) users can only fetch domains for their own department
-    if (req.user && req.user.access_level === 2 && req.user.department) {
-        if (department !== req.user.department) {
-            return res.status(403).json({ error: 'You can only access domains for your own department' });
-        }
-    }
-
     // Static domain list for C.Tech department
     const cTechDomains = [
         'Other',
@@ -1282,4 +1267,82 @@ exports.getAvailableDomains = (req, res) => {
         console.error('Error in getAvailableDomains:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
+};
+
+// ── Get Faculty Publication Types List ──────────────────────────────────────
+// Returns all faculty with counts of Journal, Conference, and Book publications
+// Supports search by faculty name, department filtering based on access level
+exports.getFacultyPublicationTypesList = (req, res) => {
+    const { search, department } = req.query;
+
+    let deptConditions = [];
+    let deptParams = [];
+    try {
+        if (req.user && req.user.access_level) {
+            const filter = getDepartmentFilterForRequest(req, 'u');
+            deptConditions = filter.conditions;
+            deptParams = filter.params;
+        }
+    } catch (err) {
+        console.error('Department filter error:', err);
+        return res.status(403).json({ success: false, message: 'Access denied: ' + err.message });
+    }
+
+    // Add additional department filter from query parameter if provided and user is admin
+    if (department && department !== 'all' && req.user && req.user.access_level === 1) {
+        deptConditions.push('u.department = ?');
+        deptParams.push(department);
+    }
+
+    const whereClauses = ['u.faculty_id IS NOT NULL'];
+    const params = [];
+
+    if (search && search.trim()) {
+        whereClauses.push(`LOWER(u.faculty_name) LIKE ?`);
+        params.push(`%${search.toLowerCase()}%`);
+    }
+
+    whereClauses.push(...deptConditions);
+    params.push(...deptParams);
+
+    const query = `
+        SELECT
+            u.scopus_id,
+            u.faculty_id,
+            u.faculty_name,
+            u.department,
+            u.docs_count,
+            COUNT(DISTINCT CASE WHEN LOWER(COALESCE(p.type, 'Journal')) = 'journal' THEN p.id END) AS journal_count,
+            COUNT(DISTINCT CASE WHEN LOWER(COALESCE(p.type, 'Journal')) = 'conference proceeding' THEN p.id END) AS conference_count,
+            COUNT(DISTINCT CASE WHEN LOWER(COALESCE(p.type, 'Journal')) = 'book' THEN p.id END) AS book_count,
+            COUNT(DISTINCT p.id) AS total_count
+        FROM users u
+        LEFT JOIN papers p ON u.scopus_id = p.scopus_id
+        WHERE ${whereClauses.join(" AND ")}
+        GROUP BY u.scopus_id, u.faculty_id, u.faculty_name, u.department, u.docs_count
+        ORDER BY u.faculty_name ASC
+    `;
+
+    db.query(query, params, (err, results) => {
+        if (err) {
+            console.error('Error fetching faculty publication types:', err);
+            return res.status(500).json({ success: false, error: 'Failed to fetch faculty publication data', message: err.message });
+        }
+
+        const enriched = results.map(row => ({
+            faculty_id: row.faculty_id,
+            faculty_name: row.faculty_name,
+            department: row.department,
+            journal_count: row.journal_count || 0,
+            conference_count: row.conference_count || 0,
+            book_count: row.book_count || 0,
+            total_count: row.total_count || 0
+        }));
+
+        res.json({
+            success: true,
+            data: enriched,
+            count: enriched.length
+        });
+    });
 };
