@@ -16,7 +16,8 @@ const {
     exportFacultyPapersIEEE,
     getQuartileReport,
     getQuartileSummaryStats,
-    getAvailableDomains
+    getAvailableDomains,
+    getFacultyPublicationTypesList
     // NOTE: getPublicationPapers is NOT here — it lives in statsController
     //       and is served at GET /api/publication-papers (via publications route)
 } = require('../controllers/facultyController');
@@ -32,6 +33,7 @@ router.use((req, res, next) => {
 // ── Named routes BEFORE parameterised ones ───────────────────────────────────
 router.get('/quartile-report/data', getQuartileReport);
 router.get('/quartile-report/summary-stats', getQuartileSummaryStats);
+router.get('/publication-types/list', getFacultyPublicationTypesList);
 router.get('/available-domains', getAvailableDomains);
 
 router.get('/author-list', getAuthorList);
